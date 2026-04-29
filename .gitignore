@@ -1,0 +1,32 @@
+# 敏感数据（排除真实配置文件，保留示例文件）
+.env
+data/bot*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 虚拟环境
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Git
+.git/
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# 文档
+README.md
+*.md

@@ -1,0 +1,3 @@
+- cron: "9 2 * * *"
+  target: "@me"
+  command: "/start"
