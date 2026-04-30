@@ -1,14 +1,14 @@
 services:
   bot:
-    build: .
+    image: chiupam/tgbot:latest
     container_name: bot
     environment:
-      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
-      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
-      - TELEGRAM_PHONE=${TELEGRAM_PHONE:-}
+      - TELEGRAM_API_ID=12345678
+      - TELEGRAM_API_HASH=your_api_hash
+      - TELEGRAM_PHONE=+86138xxxxxxxx
       - SESSION_PATH=/app/data/bot.session
       - CONFIG_DIR=/app/data
-      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
+      - LOG_LEVEL=INFO
     volumes:
       - ./data:/app/data
     restart: unless-stopped

@@ -2,13 +2,12 @@ import asyncio
 import logging
 import os
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
 import yaml
 from croniter import croniter
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "DEBUG").upper()
@@ -48,6 +47,7 @@ client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
 
 tasks = []
 scheduled_jobs = []
+me_entity = None
 
 async def load_config():
     global tasks
@@ -82,6 +82,17 @@ async def load_config():
     logger.info(f"配置加载完成，当前总任务数: {len(tasks)}")
     return tasks
 
+def save_config():
+    config_path = Path(CONFIG_DIR) / "tasks.yaml"
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(tasks, f, allow_unicode=True, sort_keys=False)
+        logger.info(f"配置已保存: {config_path}")
+        return True
+    except Exception as e:
+        logger.error(f"保存配置失败: {e}", exc_info=True)
+        return False
+
 def schedule_tasks():
     global scheduled_jobs
     scheduled_jobs.clear()
@@ -105,6 +116,24 @@ def schedule_tasks():
 
     logger.info(f"定时任务调度完成，共 {len(scheduled_jobs)} 个任务")
 
+def format_status():
+    lines = ["📋 <b>当前任务列表</b>", ""]
+    if not scheduled_jobs:
+        lines.append("暂无任务")
+        return "\n".join(lines)
+
+    for job in scheduled_jobs:
+        next_run_str = job["next_run"].strftime("%m-%d %H:%M")
+        lines.append(
+            f"<code>{job['id']}</code> | {job['cron']}\n"
+            f"  → {job['target']}: {job['command']}\n"
+            f"  ⏰ 下次执行: {next_run_str}"
+        )
+        lines.append("")
+
+    lines.append(f"共 {len(scheduled_jobs)} 个任务")
+    return "\n".join(lines)
+
 async def send_message(target, command):
     try:
         logger.debug(f"准备发送消息: target={target}, command={command}")
@@ -114,12 +143,18 @@ async def send_message(target, command):
         return True
     except FloodWaitError as e:
         logger.warning(f"触发 FloodWait，需等待 {e.seconds} 秒: target={target}")
+        if me_entity:
+            await client.send_message(me_entity, f"⚠️ 发送失败（FloodWait）: 需等待 {e.seconds} 秒\n目标: {target}\n内容: {command}")
         return False
     except RPCError as e:
         logger.error(f"Telegram API 错误: {e}, target={target}, command={command}")
+        if me_entity:
+            await client.send_message(me_entity, f"❌ 发送失败（API 错误）: {e}\n目标: {target}\n内容: {command}")
         return False
     except Exception as e:
         logger.error(f"发送消息异常: {e}, target={target}, command={command}", exc_info=True)
+        if me_entity:
+            await client.send_message(me_entity, f"❌ 发送失败（异常）: {e}\n目标: {target}\n内容: {command}")
         return False
 
 async def run_scheduler():
@@ -158,7 +193,68 @@ async def watch_config():
             logger.error(f"监控配置文件异常: {e}", exc_info=True)
         await asyncio.sleep(5)
 
+@client.on(events.NewMessage(from_users="me", pattern=r"^status$"))
+async def handle_status(event):
+    await event.edit(format_status(), parse_mode="html")
+
+@client.on(events.NewMessage(from_users="me", pattern=r"^add\s+(.+)"))
+async def handle_add(event):
+    try:
+        parts = event.pattern_match.group(1).split("|", 2)
+        if len(parts) != 3:
+            await event.edit("❌ 格式错误，正确格式：\n<code>add cron表达式|目标|内容</code>\n例：<code>add 0 9 * * *|@me|早安</code>", parse_mode="html")
+            return
+
+        cron_expr, target, command = [p.strip() for p in parts]
+        croniter(cron_expr, datetime.now())
+
+        new_task = {"cron": cron_expr, "target": target, "command": command}
+        tasks.append(new_task)
+
+        if save_config():
+            schedule_tasks()
+            await event.edit(f"✅ 任务添加成功\n\n<code>{format_status()}</code>", parse_mode="html")
+        else:
+            tasks.pop()
+            await event.edit("❌ 保存配置失败，任务未添加")
+    except Exception as e:
+        logger.error(f"添加任务失败: {e}", exc_info=True)
+        await event.edit(f"❌ 添加失败: {e}")
+
+@client.on(events.NewMessage(from_users="me", pattern=r"^del\s+(\d+)"))
+async def handle_del(event):
+    try:
+        idx = int(event.pattern_match.group(1))
+        if idx < 0 or idx >= len(tasks):
+            await event.edit(f"❌ 任务 ID {idx} 不存在，当前共 {len(tasks)} 个任务")
+            return
+
+        removed = tasks.pop(idx)
+        if save_config():
+            schedule_tasks()
+            await event.edit(f"✅ 已删除任务 {idx}：\n<code>{removed['cron']} | {removed['target']} | {removed['command']}</code>\n\n{format_status()}", parse_mode="html")
+        else:
+            tasks.insert(idx, removed)
+            await event.edit("❌ 保存配置失败，任务未删除")
+    except Exception as e:
+        logger.error(f"删除任务失败: {e}", exc_info=True)
+        await event.edit(f"❌ 删除失败: {e}")
+
+@client.on(events.NewMessage(from_users="me", pattern=r"^help$"))
+async def handle_help(event):
+    help_text = (
+        "🤖 <b>Telegram Cron Bot 命令列表</b>\n\n"
+        "<code>status</code> - 查看任务列表和下次执行时间\n"
+        "<code>add cron|目标|内容</code> - 添加定时任务\n"
+        "  例：<code>add 0 9 * * *|@me|早安</code>\n"
+        "<code>del ID</code> - 删除指定 ID 的任务\n"
+        "  例：<code>del 0</code>\n"
+        "<code>help</code> - 显示此帮助"
+    )
+    await event.edit(help_text, parse_mode="html")
+
 async def main():
+    global me_entity
     logger.info("应用启动")
     if not API_ID or not API_HASH:
         logger.error("缺少环境变量 TELEGRAM_API_ID 或 TELEGRAM_API_HASH")
@@ -169,24 +265,23 @@ async def main():
     if not await client.is_user_authorized():
         logger.error("用户未登录，请先执行 docker exec -it bot tglogin")
         sys.exit(1)
-    me = await client.get_me()
-    logger.info(f"Telegram 客户端已连接，用户: {me.first_name} (@{me.username})")
+    me_entity = await client.get_me()
+    logger.info(f"Telegram 客户端已连接，用户: {me_entity.first_name} (@{me_entity.username})")
 
     await load_config()
     schedule_tasks()
 
-    # 启动后给 @me 发送运行状态消息
     try:
         startup_msg = (
             f"🤖 <b>Telegram Cron Bot 已启动</b>\n"
             f"\n"
-            f"👤 用户: {me.first_name} (@{me.username})\n"
+            f"👤 用户: {me_entity.first_name} (@{me_entity.username})\n"
             f"⏰ 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"📋 任务数: {len(tasks)}\n"
             f"\n"
-            f"✅ 系统运行正常"
+            f"发送 <code>help</code> 查看可用命令"
         )
-        await client.send_message(me, startup_msg, parse_mode="html")
+        await client.send_message(me_entity, startup_msg, parse_mode="html")
         logger.info("启动通知已发送至 @me")
     except Exception as e:
         logger.warning(f"发送启动通知失败: {e}")
@@ -194,6 +289,7 @@ async def main():
     await asyncio.gather(
         run_scheduler(),
         watch_config(),
+        client.run_until_disconnected(),
     )
 
 if __name__ == "__main__":

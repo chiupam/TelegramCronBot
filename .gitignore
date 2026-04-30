@@ -1,6 +1,6 @@
-# 敏感数据（排除真实配置文件，保留示例文件）
+# 敏感数据
 .env
-data/bot*
+data/
 
 # Python
 __pycache__/
@@ -18,15 +18,3 @@ env/
 .idea/
 *.swp
 *.swo
-
-# Git
-.git/
-
-# Docker
-docker-compose*.yml
-Dockerfile*
-.dockerignore
-
-# 文档
-README.md
-*.md
