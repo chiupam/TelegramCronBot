@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -116,7 +116,24 @@ def schedule_tasks():
 
     logger.info(f"定时任务调度完成，共 {len(scheduled_jobs)} 个任务")
 
+def get_today_triggers(cron_expr):
+    """返回今天（00:00~24:00）所有触发时间列表"""
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+    itr = croniter(cron_expr, today_start)
+    triggers = []
+    while True:
+        nxt = itr.get_next(datetime)
+        if nxt >= tomorrow_start:
+            break
+        triggers.append(nxt)
+    return triggers
+
 def format_status(filter_target=None):
+    if filter_target and filter_target.strip().lower() == "today":
+        return _format_today()
+
     lines = ["📋 <b>当前任务列表</b>", ""]
 
     jobs_to_show = scheduled_jobs
@@ -143,6 +160,58 @@ def format_status(filter_target=None):
         lines.append("")
 
     lines.append(f"共 {len(jobs_to_show)} 个任务")
+    return "\n".join(lines)
+
+def _format_today():
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    lines = [f"📋 <b>今日定时任务</b>（{today_str}）", ""]
+
+    pending = []
+    done = []
+
+    for job in scheduled_jobs:
+        try:
+            triggers = get_today_triggers(job["cron"])
+        except Exception:
+            continue
+        if not triggers:
+            continue
+
+        executed_times = [t for t in triggers if t <= now]
+        pending_times = [t for t in triggers if t > now]
+
+        if pending_times:
+            pending.append((job, pending_times))
+        else:
+            done.append((job, executed_times))
+
+    lines.append(f"⏳ 待执行（{len(pending)}）")
+    if not pending:
+        lines.append("  无")
+    for job, times in pending:
+        times_str = "、".join(t.strftime("%H:%M") for t in times)
+        lines.append(
+            f"<code>{job['id']}</code> | {job['cron']}\n"
+            f"  → {job['target']}: {job['command']}\n"
+            f"  ⏰ 待执行: {times_str}"
+        )
+        lines.append("")
+
+    lines.append(f"✅ 已执行（{len(done)}）")
+    if not done:
+        lines.append("  无")
+    for job, times in done:
+        times_str = "、".join(t.strftime("%H:%M") for t in times)
+        lines.append(
+            f"<code>{job['id']}</code> | {job['cron']}\n"
+            f"  → {job['target']}: {job['command']}\n"
+            f"  ✅ 已执行: {times_str}"
+        )
+        lines.append("")
+
+    total = len(pending) + len(done)
+    lines.append(f"共 {total} 个任务今日触发")
     return "\n".join(lines)
 
 async def send_message(target, command):
@@ -207,7 +276,23 @@ async def watch_config():
 @client.on(events.NewMessage(from_users="me", pattern=r"^status(?:\s+(.+))?$"))
 async def handle_status(event):
     target_filter = event.pattern_match.group(1)
-    await event.edit(format_status(target_filter), parse_mode="html")
+    # 任务较多时状态消息可能超过 Telegram 单条 4096 字符限制，按行拆分为多条发送
+    status_text = format_status(target_filter)
+    max_len = 3500
+    lines = status_text.split("\n")
+    chunks = []
+    current = ""
+    for line in lines:
+        if current and len(current) + 1 + len(line) > max_len:
+            chunks.append(current)
+            current = line
+        else:
+            current = (current + "\n" + line) if current else line
+    if current:
+        chunks.append(current)
+    await event.edit(chunks[0], parse_mode="html")
+    for chunk in chunks[1:]:
+        await event.reply(chunk, parse_mode="html")
 
 @client.on(events.NewMessage(from_users="me", pattern=r"^add\s+(.+)"))
 async def handle_add(event):
@@ -259,6 +344,7 @@ async def handle_help(event):
         "<code>status</code> - 查看任务列表和下次执行时间\n"
         "<code>status 目标</code> - 筛选指定目标的任务\n"
         "  例：<code>status @123456</code>\n"
+        "<code>status today</code> - 查看今日触发的任务（区分待执行/已执行）\n"
         "<code>add cron|目标|内容</code> - 添加定时任务\n"
         "  例：<code>add 0 9 * * *|@me|早安</code>\n"
         "<code>del ID</code> - 删除指定 ID 的任务\n"
