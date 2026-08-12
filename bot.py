@@ -116,13 +116,24 @@ def schedule_tasks():
 
     logger.info(f"定时任务调度完成，共 {len(scheduled_jobs)} 个任务")
 
-def format_status():
+def format_status(filter_target=None):
     lines = ["📋 <b>当前任务列表</b>", ""]
-    if not scheduled_jobs:
-        lines.append("暂无任务")
+
+    jobs_to_show = scheduled_jobs
+    if filter_target:
+        filter_clean = filter_target.lstrip("@").lower()
+        jobs_to_show = [
+            job for job in scheduled_jobs
+            if job["target"].lstrip("@").lower() == filter_clean
+        ]
+        lines.append(f"🔍 筛选目标: <code>{filter_target}</code>")
+        lines.append("")
+
+    if not jobs_to_show:
+        lines.append("暂无任务" if not filter_target else "未找到匹配的任务")
         return "\n".join(lines)
 
-    for job in scheduled_jobs:
+    for job in jobs_to_show:
         next_run_str = job["next_run"].strftime("%m-%d %H:%M")
         lines.append(
             f"<code>{job['id']}</code> | {job['cron']}\n"
@@ -131,7 +142,7 @@ def format_status():
         )
         lines.append("")
 
-    lines.append(f"共 {len(scheduled_jobs)} 个任务")
+    lines.append(f"共 {len(jobs_to_show)} 个任务")
     return "\n".join(lines)
 
 async def send_message(target, command):
@@ -193,9 +204,10 @@ async def watch_config():
             logger.error(f"监控配置文件异常: {e}", exc_info=True)
         await asyncio.sleep(5)
 
-@client.on(events.NewMessage(from_users="me", pattern=r"^status$"))
+@client.on(events.NewMessage(from_users="me", pattern=r"^status(?:\s+(.+))?$"))
 async def handle_status(event):
-    await event.edit(format_status(), parse_mode="html")
+    target_filter = event.pattern_match.group(1)
+    await event.edit(format_status(target_filter), parse_mode="html")
 
 @client.on(events.NewMessage(from_users="me", pattern=r"^add\s+(.+)"))
 async def handle_add(event):
@@ -245,6 +257,8 @@ async def handle_help(event):
     help_text = (
         "🤖 <b>Telegram Cron Bot 命令列表</b>\n\n"
         "<code>status</code> - 查看任务列表和下次执行时间\n"
+        "<code>status 目标</code> - 筛选指定目标的任务\n"
+        "  例：<code>status @123456</code>\n"
         "<code>add cron|目标|内容</code> - 添加定时任务\n"
         "  例：<code>add 0 9 * * *|@me|早安</code>\n"
         "<code>del ID</code> - 删除指定 ID 的任务\n"
