@@ -131,9 +131,6 @@ def get_today_triggers(cron_expr):
     return triggers
 
 def format_status(filter_target=None):
-    if filter_target and filter_target.strip().lower() == "today":
-        return _format_today()
-
     lines = ["📋 <b>当前任务列表</b>", ""]
 
     jobs_to_show = scheduled_jobs
@@ -273,13 +270,10 @@ async def watch_config():
             logger.error(f"监控配置文件异常: {e}", exc_info=True)
         await asyncio.sleep(5)
 
-@client.on(events.NewMessage(from_users="me", pattern=r"^status(?:\s+(.+))?$"))
-async def handle_status(event):
-    target_filter = event.pattern_match.group(1)
-    # 任务较多时状态消息可能超过 Telegram 单条 4096 字符限制，按行拆分为多条发送
-    status_text = format_status(target_filter)
+async def reply_chunked(event, text):
+    """任务较多时消息可能超过 Telegram 单条 4096 字符限制，按行拆分为多条发送"""
     max_len = 3500
-    lines = status_text.split("\n")
+    lines = text.split("\n")
     chunks = []
     current = ""
     for line in lines:
@@ -293,6 +287,15 @@ async def handle_status(event):
     await event.edit(chunks[0], parse_mode="html")
     for chunk in chunks[1:]:
         await event.reply(chunk, parse_mode="html")
+
+@client.on(events.NewMessage(from_users="me", pattern=r"^status(?:\s+(.+))?$"))
+async def handle_status(event):
+    target_filter = event.pattern_match.group(1)
+    await reply_chunked(event, format_status(target_filter))
+
+@client.on(events.NewMessage(from_users="me", pattern=r"^today$"))
+async def handle_today(event):
+    await reply_chunked(event, _format_today())
 
 @client.on(events.NewMessage(from_users="me", pattern=r"^add\s+(.+)"))
 async def handle_add(event):
@@ -344,7 +347,7 @@ async def handle_help(event):
         "<code>status</code> - 查看任务列表和下次执行时间\n"
         "<code>status 目标</code> - 筛选指定目标的任务\n"
         "  例：<code>status @123456</code>\n"
-        "<code>status today</code> - 查看今日触发的任务（区分待执行/已执行）\n"
+        "<code>today</code> - 查看今日触发的任务（区分待执行/已执行）\n"
         "<code>add cron|目标|内容</code> - 添加定时任务\n"
         "  例：<code>add 0 9 * * *|@me|早安</code>\n"
         "<code>del ID</code> - 删除指定 ID 的任务\n"
